@@ -1,0 +1,5 @@
+{
+  "provider": "CLI",
+  "model": "grok-4.5",
+  "thinking": "high"
+}
