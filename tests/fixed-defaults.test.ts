@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterScopedModels, registerFixedDefaults } from "../fixed-defaults.ts";
+import { filterScopedModels, registerFixedDefaults } from "../extensions/fixed-defaults.ts";
 
 const config = { provider: "CLI", model: "grok-4.5", thinking: "high" } as const;
 const store = { read: async () => config, write: async () => {} };

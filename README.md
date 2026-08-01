@@ -12,7 +12,7 @@ A minimal [Pi](https://github.com/badlogic/pi-mono) extension that keeps a fixed
 ## Install
 
 ```bash
-cp fixed-defaults.ts ~/.pi/agent/extensions/
+cp extensions/fixed-defaults.ts ~/.pi/agent/extensions/
 cp fixed-defaults.example.json ~/.pi/agent/fixed-defaults.json
 ```
 
