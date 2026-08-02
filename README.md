@@ -7,7 +7,11 @@ A minimal [Pi](https://github.com/badlogic/pi-mono) extension that keeps a fixed
 - `/defaults` displays only scoped models.
 - Search models directly in a paginated list.
 - Saves the selected model and thinking level for future fresh sessions and `/new`.
-- Resumed and forked sessions keep their saved model and thinking level.
+- Startup and `/new` always apply the fixed defaults.
+- Resumed, forked, and reloaded sessions keep an allowed saved model.
+- Missing or out-of-scope restored models fall back to the fixed defaults.
+- Later out-of-scope `model_select` events are reverted once to the fixed defaults.
+- Empty `scopedModels` means unrestricted (no scope filter active).
 
 ## Install
 

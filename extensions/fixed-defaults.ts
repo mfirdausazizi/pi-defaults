@@ -1,8 +1,13 @@
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
 import { readFile, writeFile } from "node:fs/promises";
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
 import { homedir } from "node:os";
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ScopedModel, ThinkingLevel } from "@earendil-works/pi-coding-agent";
+// @ts-ignore -- Pi supplies this package when loading the extension.
+import type { ExtensionAPI, ExtensionContext, ScopedModel } from "@earendil-works/pi-coding-agent";
 
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type FixedDefaults = {
 	provider: string;
 	model: string;
@@ -13,6 +18,8 @@ type ConfigStore = {
 	read: () => Promise<FixedDefaults>;
 	write: (config: FixedDefaults) => Promise<void>;
 };
+
+type ModelLike = { provider: string; id: string };
 
 const configPath = join(homedir(), ".pi", "agent", "fixed-defaults.json");
 const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -36,13 +43,29 @@ export function filterScopedModels(models: readonly ScopedModel[], query: string
 	);
 }
 
+/** Empty scoped list means unrestricted (Pi has no enabledModels filter active). */
+export function isModelInScope(
+	model: ModelLike | null | undefined,
+	scopedModels: readonly ScopedModel[] | null | undefined,
+): boolean {
+	if (!model?.provider || !model?.id) return false;
+	if (!scopedModels || scopedModels.length === 0) return true;
+	const id = `${model.provider}/${model.id}`;
+	return scopedModels.some(({ model: entry }) => `${entry.provider}/${entry.id}` === id);
+}
+
 function selectScopedModel(ctx: ExtensionContext, currentModel: string): Promise<string | undefined> {
 	if (ctx.scopedModels.length === 0) {
 		ctx.ui.notify("No scoped models configured", "warning");
 		return Promise.resolve(undefined);
 	}
 
-	return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+	return ctx.ui.custom<string | undefined>((
+		tui: { requestRender(): void },
+		theme: { fg(color: string, text: string): string; bold(text: string): string },
+		keybindings: { matches(data: string, action: string): boolean },
+		done: (value: string | undefined) => void,
+	) => {
 		const pageSize = 10;
 		let query = "";
 		let filtered = filterScopedModels(ctx.scopedModels, query);
@@ -118,19 +141,42 @@ function selectScopedModel(ctx: ExtensionContext, currentModel: string): Promise
 }
 
 export function registerFixedDefaults(pi: ExtensionAPI, store: ConfigStore = defaultStore): void {
+	let applying = false;
+
 	async function apply(config: FixedDefaults, ctx: ExtensionContext): Promise<boolean> {
-		const model = ctx.modelRegistry.find(config.provider, config.model);
-		if (!model || !(await pi.setModel(model))) {
-			ctx.ui.notify(`Fixed defaults: unavailable model ${config.provider}/${config.model}`, "warning");
-			return false;
+		const current = ctx.model;
+		const alreadyFixed =
+			current?.provider === config.provider && current?.id === config.model;
+
+		if (!alreadyFixed) {
+			const model = ctx.modelRegistry.find(config.provider, config.model);
+			if (!model) {
+				ctx.ui.notify(`Fixed defaults: unavailable model ${config.provider}/${config.model}`, "warning");
+				return false;
+			}
+			applying = true;
+			try {
+				if (!(await pi.setModel(model))) {
+					ctx.ui.notify(`Fixed defaults: unavailable model ${config.provider}/${config.model}`, "warning");
+					return false;
+				}
+			} finally {
+				applying = false;
+			}
 		}
+
 		pi.setThinkingLevel(config.thinking);
 		return true;
 	}
 
+	async function applyIfNeeded(ctx: ExtensionContext): Promise<void> {
+		const config = await store.read();
+		await apply(config, ctx);
+	}
+
 	pi.registerCommand("defaults", {
 		description: "Set the model and thinking level used by fresh sessions",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionContext) => {
 			try {
 				const current = await store.read();
 				const currentModel = `${current.provider}/${current.model}`;
@@ -157,10 +203,27 @@ export function registerFixedDefaults(pi: ExtensionAPI, store: ConfigStore = def
 		},
 	});
 
-	pi.on("session_start", async (event, ctx) => {
-		if (event.reason !== "startup" && event.reason !== "new") return;
+	pi.on("session_start", async (event: { reason: string }, ctx: ExtensionContext) => {
 		try {
-			await apply(await store.read(), ctx);
+			if (event.reason === "startup" || event.reason === "new") {
+				await applyIfNeeded(ctx);
+				return;
+			}
+			if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
+				if (isModelInScope(ctx.model, ctx.scopedModels)) return;
+				await applyIfNeeded(ctx);
+			}
+		} catch (error) {
+			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	});
+
+	pi.on("model_select", async (event: { model?: ModelLike }, ctx: ExtensionContext) => {
+		if (applying) return;
+		try {
+			const selected = event?.model ?? ctx.model;
+			if (isModelInScope(selected, ctx.scopedModels)) return;
+			await applyIfNeeded(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}

@@ -1,6 +1,8 @@
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
 import assert from "node:assert/strict";
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
 import test from "node:test";
-import { filterScopedModels, registerFixedDefaults } from "../extensions/fixed-defaults.ts";
+import { filterScopedModels, isModelInScope, registerFixedDefaults } from "../extensions/fixed-defaults.ts";
 
 const config = { provider: "CLI", model: "grok-4.5", thinking: "high" } as const;
 const store = { read: async () => config, write: async () => {} };
@@ -17,6 +19,39 @@ const pagedScopedModels = [
 	})),
 ] as any;
 
+function createHarness() {
+	const selected: string[] = [];
+	const handlers = new Map<string, (...args: any[]) => any>();
+	const pi = {
+		on(event: string, handler: (...args: any[]) => any) {
+			handlers.set(event, handler);
+		},
+		registerCommand() {},
+		async setModel(model: { provider: string; id: string }) {
+			selected.push(`model:${model.provider}/${model.id}`);
+			return true;
+		},
+		setThinkingLevel(level: string) {
+			selected.push(`thinking:${level}`);
+		},
+	} as any;
+	return { selected, handlers, pi };
+}
+
+function baseCtx(overrides: Record<string, unknown> = {}) {
+	return {
+		modelRegistry: { find: (provider: string, model: string) => ({ provider, id: model }) },
+		scopedModels,
+		ui: { notify() {} },
+		...overrides,
+	};
+}
+
+function required<T>(value: T | undefined): T {
+	if (value === undefined) throw new Error("Required harness registration is missing");
+	return value;
+}
+
 test("filters only the supplied scoped models", () => {
 	assert.deepEqual(
 		filterScopedModels(scopedModels, "grok").map((item) => item.model.id),
@@ -24,36 +59,135 @@ test("filters only the supplied scoped models", () => {
 	);
 });
 
-test("applies fixed defaults on startup and /new only", async () => {
-	let onSessionStart: ((event: { reason: string }, ctx: any) => Promise<void>) | undefined;
-	const selected: string[] = [];
-	const pi = {
-		on(event: string, handler: typeof onSessionStart) {
-			assert.equal(event, "session_start");
-			onSessionStart = handler;
-		},
-		registerCommand() {},
-		async setModel(model: { provider: string; id: string }) {
-			selected.push(`${model.provider}/${model.id}`);
-			return true;
-		},
-		setThinkingLevel(level: string) {
-			selected.push(level);
-		},
-	} as any;
-	const ctx = {
-		modelRegistry: { find: (provider: string, model: string) => ({ provider, id: model }) },
-		ui: { notify() {} },
-	};
+test("isModelInScope treats empty scoped list as unrestricted", () => {
+	assert.equal(isModelInScope({ provider: "CLI", id: "anything" }, []), true);
+	assert.equal(isModelInScope({ provider: "CLI", id: "grok-4.5" }, scopedModels), true);
+	assert.equal(isModelInScope({ provider: "CLI", id: "blocked" }, scopedModels), false);
+	assert.equal(isModelInScope(undefined, scopedModels), false);
+});
 
+test("applies fixed defaults on startup and new", async () => {
+	const { selected, handlers, pi } = createHarness();
 	registerFixedDefaults(pi, store);
-	assert.ok(onSessionStart);
+	const onSessionStart = required(handlers.get("session_start"));
 
-	for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
+	const ctx = baseCtx({ model: undefined });
+	await onSessionStart({ reason: "startup" }, ctx);
+	await onSessionStart({ reason: "new" }, ctx);
+
+	assert.deepEqual(selected, [
+		"model:CLI/grok-4.5",
+		"thinking:high",
+		"model:CLI/grok-4.5",
+		"thinking:high",
+	]);
+});
+
+test("resume fork reload preserve an allowed saved model", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerFixedDefaults(pi, store);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	const ctx = baseCtx({
+		model: { provider: "CLI", id: "gpt-5.6-sol" },
+	});
+	for (const reason of ["resume", "fork", "reload"]) {
 		await onSessionStart({ reason }, ctx);
 	}
 
-	assert.deepEqual(selected, ["CLI/grok-4.5", "high", "CLI/grok-4.5", "high"]);
+	assert.deepEqual(selected, []);
+});
+
+test("resume fork reload pin when model is missing or out of scope", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerFixedDefaults(pi, store);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart({ reason: "resume" }, baseCtx({ model: undefined }));
+	await onSessionStart(
+		{ reason: "fork" },
+		baseCtx({ model: { provider: "CLI", id: "claude-fable-5" } }),
+	);
+	await onSessionStart(
+		{ reason: "reload" },
+		baseCtx({ model: { provider: "other", id: "grok-4.5" } }),
+	);
+
+	assert.deepEqual(selected, [
+		"model:CLI/grok-4.5",
+		"thinking:high",
+		"model:CLI/grok-4.5",
+		"thinking:high",
+		"model:CLI/grok-4.5",
+		"thinking:high",
+	]);
+});
+
+test("empty scopedModels leaves resume model unrestricted", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerFixedDefaults(pi, store);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "resume" },
+		baseCtx({
+			scopedModels: [],
+			model: { provider: "CLI", id: "claude-fable-5" },
+		}),
+	);
+
+	assert.deepEqual(selected, []);
+});
+
+test("model_select reverts out-of-scope once and preserves allowed selections", async () => {
+	const { selected, handlers, pi } = createHarness();
+	let currentModel: { provider: string; id: string } | undefined = {
+		provider: "CLI",
+		id: "gpt-5.6-sol",
+	};
+	pi.setModel = async (model: { provider: string; id: string }) => {
+		selected.push(`model:${model.provider}/${model.id}`);
+		currentModel = model;
+		const onModelSelect = handlers.get("model_select");
+		if (onModelSelect) {
+			await onModelSelect(
+				{ model },
+				baseCtx({ model: currentModel }),
+			);
+		}
+		return true;
+	};
+
+	registerFixedDefaults(pi, store);
+	const onModelSelect = required(handlers.get("model_select"));
+
+	await onModelSelect(
+		{ model: { provider: "CLI", id: "claude-fable-5" } },
+		baseCtx({ model: { provider: "CLI", id: "claude-fable-5" } }),
+	);
+	assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
+
+	selected.length = 0;
+	await onModelSelect(
+		{ model: { provider: "CLI", id: "gpt-5.6-sol" } },
+		baseCtx({ model: { provider: "CLI", id: "gpt-5.6-sol" } }),
+	);
+	assert.deepEqual(selected, []);
+});
+
+test("already on fixed model skips setModel but still corrects thinking", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerFixedDefaults(pi, store);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "startup" },
+		baseCtx({
+			model: { provider: "CLI", id: "grok-4.5" },
+		}),
+	);
+
+	assert.deepEqual(selected, ["thinking:high"]);
 });
 
 test("/defaults shows a searchable paginated scoped list and only saves future defaults", async () => {
@@ -83,9 +217,9 @@ test("/defaults shows a searchable paginated scoped list and only saves future d
 			saved = next;
 		},
 	});
-	assert.ok(command);
+	const defaultsCommand = required(command);
 
-	await command.handler("", {
+	await defaultsCommand.handler("", {
 		scopedModels: pagedScopedModels,
 		ui: {
 			custom: async (factory: any) => {
