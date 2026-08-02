@@ -204,22 +204,19 @@ export function registerFixedDefaults(pi: ExtensionAPI, store: ConfigStore = def
 	});
 
 	pi.on("session_start", async (event: { reason: string }, ctx: ExtensionContext) => {
+		if (event.reason !== "startup" && event.reason !== "new") return;
 		try {
-			if (event.reason === "startup" || event.reason === "new") {
-				await applyIfNeeded(ctx);
-				return;
-			}
-			if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
-				if (isModelInScope(ctx.model, ctx.scopedModels)) return;
-				await applyIfNeeded(ctx);
-			}
+			await applyIfNeeded(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	});
 
-	pi.on("model_select", async (event: { model?: ModelLike }, ctx: ExtensionContext) => {
-		if (applying) return;
+	pi.on("model_select", async (
+		event: { model?: ModelLike; source?: "set" | "cycle" | "restore" },
+		ctx: ExtensionContext,
+	) => {
+		if (applying || event.source === "restore") return;
 		try {
 			const selected = event?.model ?? ctx.model;
 			if (isModelInScope(selected, ctx.scopedModels)) return;

@@ -98,29 +98,19 @@ test("resume fork reload preserve an allowed saved model", async () => {
 	assert.deepEqual(selected, []);
 });
 
-test("resume fork reload pin when model is missing or out of scope", async () => {
+test("resume fork reload preserve existing restored models", async () => {
 	const { selected, handlers, pi } = createHarness();
 	registerFixedDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
-	await onSessionStart({ reason: "resume" }, baseCtx({ model: undefined }));
-	await onSessionStart(
-		{ reason: "fork" },
-		baseCtx({ model: { provider: "CLI", id: "claude-fable-5" } }),
-	);
-	await onSessionStart(
-		{ reason: "reload" },
-		baseCtx({ model: { provider: "other", id: "grok-4.5" } }),
-	);
+	for (const reason of ["resume", "fork", "reload"]) {
+		await onSessionStart(
+			{ reason },
+			baseCtx({ model: { provider: "other", id: "existing-model" } }),
+		);
+	}
 
-	assert.deepEqual(selected, [
-		"model:CLI/grok-4.5",
-		"thinking:high",
-		"model:CLI/grok-4.5",
-		"thinking:high",
-		"model:CLI/grok-4.5",
-		"thinking:high",
-	]);
+	assert.deepEqual(selected, []);
 });
 
 test("empty scopedModels leaves resume model unrestricted", async () => {
@@ -172,6 +162,22 @@ test("model_select reverts out-of-scope once and preserves allowed selections", 
 		{ model: { provider: "CLI", id: "gpt-5.6-sol" } },
 		baseCtx({ model: { provider: "CLI", id: "gpt-5.6-sol" } }),
 	);
+	assert.deepEqual(selected, []);
+});
+
+test("model_select ignores restored model selections", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerFixedDefaults(pi, store);
+	const onModelSelect = required(handlers.get("model_select"));
+
+	await onModelSelect(
+		{
+			model: { provider: "other", id: "existing-model" },
+			source: "restore",
+		},
+		baseCtx({ model: { provider: "other", id: "existing-model" } }),
+	);
+
 	assert.deepEqual(selected, []);
 });
 
