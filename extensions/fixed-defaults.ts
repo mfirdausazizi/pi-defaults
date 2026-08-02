@@ -4,6 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 // @ts-ignore -- standalone extension checkout has no local Node type roots.
 import { join } from "node:path";
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
+import process from "node:process";
 // @ts-ignore -- Pi supplies this package when loading the extension.
 import type { ExtensionAPI, ExtensionContext, ScopedModel } from "@earendil-works/pi-coding-agent";
 
@@ -206,6 +208,7 @@ export function registerFixedDefaults(pi: ExtensionAPI, store: ConfigStore = def
 	pi.on("session_start", async (event: { reason: string }, ctx: ExtensionContext) => {
 		if (event.reason !== "startup" && event.reason !== "new") return;
 		try {
+			if (event.reason === "startup" && process.argv.some((arg: string) => arg === "--session" || arg.startsWith("--session="))) return;
 			await applyIfNeeded(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");

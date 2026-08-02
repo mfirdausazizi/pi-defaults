@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 // @ts-ignore -- standalone extension checkout has no local Node type roots.
 import test from "node:test";
+// @ts-ignore -- standalone extension checkout has no local Node type roots.
+import process from "node:process";
 import { filterScopedModels, isModelInScope, registerFixedDefaults } from "../extensions/fixed-defaults.ts";
 
 const config = { provider: "CLI", model: "grok-4.5", thinking: "high" } as const;
@@ -43,6 +45,7 @@ function baseCtx(overrides: Record<string, unknown> = {}) {
 		modelRegistry: { find: (provider: string, model: string) => ({ provider, id: model }) },
 		scopedModels,
 		ui: { notify() {} },
+		sessionManager: { getEntries: () => [] },
 		...overrides,
 	};
 }
@@ -81,6 +84,43 @@ test("applies fixed defaults on startup and new", async () => {
 		"model:CLI/grok-4.5",
 		"thinking:high",
 	]);
+});
+
+test("startup still applies defaults after Pi writes initial model metadata", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerFixedDefaults(pi, store);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "startup" },
+		baseCtx({
+			model: { provider: "CLI", id: "gpt-5.6-sol" },
+			sessionManager: {
+				getEntries: () => [{ type: "model_change" }, { type: "thinking_level_change" }],
+			},
+		}),
+	);
+
+	assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
+});
+
+test("explicit --session startup preserves model and thinking", async () => {
+	const originalArgv = process.argv;
+	process.argv = [...originalArgv, "--session", "/tmp/existing-session.jsonl"];
+	try {
+		const { selected, handlers, pi } = createHarness();
+		registerFixedDefaults(pi, store);
+		const onSessionStart = required(handlers.get("session_start"));
+
+		await onSessionStart(
+			{ reason: "startup" },
+			baseCtx({ model: { provider: "CLI", id: "gpt-5.6-sol" } }),
+		);
+
+		assert.deepEqual(selected, []);
+	} finally {
+		process.argv = originalArgv;
+	}
 });
 
 test("resume fork reload preserve an allowed saved model", async () => {
