@@ -2,8 +2,6 @@
 import assert from "node:assert/strict";
 // @ts-ignore -- standalone extension checkout has no local Node type roots.
 import test from "node:test";
-// @ts-ignore -- standalone extension checkout has no local Node type roots.
-import process from "node:process";
 import { filterScopedModels, isModelInScope, registerFixedDefaults } from "../extensions/fixed-defaults.ts";
 
 const config = { provider: "CLI", model: "grok-4.5", thinking: "high" } as const;
@@ -104,12 +102,18 @@ test("startup still applies defaults after Pi writes initial model metadata", as
 	assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
 });
 
-test("explicit --session startup preserves model and thinking", async () => {
-	const originalArgv = process.argv;
-	process.argv = [...originalArgv, "--session", "/tmp/existing-session.jsonl"];
-	try {
+test("session-restoring CLI startup preserves model and thinking", async () => {
+	for (const argv of [
+		["pi", "--session", "/tmp/existing-session.jsonl"],
+		["pi", "--session=/tmp/existing-session.jsonl"],
+		["pi", "--continue"],
+		["pi", "-c"],
+		["pi", "--resume"],
+		["pi", "-r"],
+		["pi", "--fork", "/tmp/existing-session.jsonl"],
+	]) {
 		const { selected, handlers, pi } = createHarness();
-		registerFixedDefaults(pi, store);
+		registerFixedDefaults(pi, store, argv);
 		const onSessionStart = required(handlers.get("session_start"));
 
 		await onSessionStart(
@@ -117,9 +121,7 @@ test("explicit --session startup preserves model and thinking", async () => {
 			baseCtx({ model: { provider: "CLI", id: "gpt-5.6-sol" } }),
 		);
 
-		assert.deepEqual(selected, []);
-	} finally {
-		process.argv = originalArgv;
+		assert.deepEqual(selected, [], argv.join(" "));
 	}
 });
 

@@ -142,7 +142,11 @@ function selectScopedModel(ctx: ExtensionContext, currentModel: string): Promise
 	});
 }
 
-export function registerFixedDefaults(pi: ExtensionAPI, store: ConfigStore = defaultStore): void {
+export function registerFixedDefaults(
+	pi: ExtensionAPI,
+	store: ConfigStore = defaultStore,
+	argv: readonly string[] = process.argv,
+): void {
 	let applying = false;
 
 	async function apply(config: FixedDefaults, ctx: ExtensionContext): Promise<boolean> {
@@ -208,7 +212,10 @@ export function registerFixedDefaults(pi: ExtensionAPI, store: ConfigStore = def
 	pi.on("session_start", async (event: { reason: string }, ctx: ExtensionContext) => {
 		if (event.reason !== "startup" && event.reason !== "new") return;
 		try {
-			if (event.reason === "startup" && process.argv.some((arg: string) => arg === "--session" || arg.startsWith("--session="))) return;
+			if (event.reason === "startup" && argv.some((arg) =>
+				["--continue", "-c", "--resume", "-r", "--session", "--fork"].includes(arg) ||
+				/^(--resume|--session|--fork)=/.test(arg),
+			)) return;
 			await applyIfNeeded(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
