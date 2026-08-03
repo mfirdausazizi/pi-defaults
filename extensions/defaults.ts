@@ -10,29 +10,38 @@ import process from "node:process";
 import type { ExtensionAPI, ExtensionContext, ScopedModel } from "@earendil-works/pi-coding-agent";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-export type FixedDefaults = {
+export type DefaultsConfig = {
 	provider: string;
 	model: string;
 	thinking: ThinkingLevel;
 };
 
+/** @deprecated Use DefaultsConfig */
+export type FixedDefaults = DefaultsConfig;
+
 type ConfigStore = {
-	read: () => Promise<FixedDefaults>;
-	write: (config: FixedDefaults) => Promise<void>;
+	read: () => Promise<DefaultsConfig>;
+	write: (config: DefaultsConfig) => Promise<void>;
 };
 
 type ModelLike = { provider: string; id: string };
 
-const configPath = join(homedir(), ".pi", "agent", "fixed-defaults.json");
+const agentDir = join(homedir(), ".pi", "agent");
+const configPath = join(agentDir, "defaults.json");
+const legacyConfigPath = join(agentDir, "fixed-defaults.json");
 const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 const defaultStore: ConfigStore = {
 	read: async () => {
-		try {
-			return JSON.parse(await readFile(configPath, "utf8")) as FixedDefaults;
-		} catch (error) {
-			throw new Error(`Cannot read ${configPath}`, { cause: error });
+		// ponytail: keep reading legacy path so rename doesn't break existing installs
+		for (const path of [configPath, legacyConfigPath]) {
+			try {
+				return JSON.parse(await readFile(path, "utf8")) as DefaultsConfig;
+			} catch {
+				// try next path
+			}
 		}
+		throw new Error(`Cannot read ${configPath}`);
 	},
 	write: async (config) => writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8"),
 };
@@ -142,28 +151,84 @@ function selectScopedModel(ctx: ExtensionContext, currentModel: string): Promise
 	});
 }
 
-export function registerFixedDefaults(
+export type CliSessionOverrides = {
+	model: boolean;
+	thinking: boolean;
+};
+
+function modelArgImpliesThinking(value: string): boolean {
+	const idx = value.lastIndexOf(":");
+	if (idx <= 0) return false;
+	return thinkingLevels.includes(value.slice(idx + 1).toLowerCase() as ThinkingLevel);
+}
+
+/** Detect explicit CLI model/thinking so startup does not stomp them. */
+export function getCliSessionOverrides(argv: readonly string[]): CliSessionOverrides {
+	let model = false;
+	let thinking = false;
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i]!;
+		if (arg === "--model" || arg === "--provider") {
+			model = true;
+			const value = argv[i + 1];
+			if (arg === "--model" && value && !value.startsWith("-") && modelArgImpliesThinking(value)) {
+				thinking = true;
+			}
+			continue;
+		}
+		if (arg.startsWith("--model=")) {
+			model = true;
+			if (modelArgImpliesThinking(arg.slice("--model=".length))) thinking = true;
+			continue;
+		}
+		if (arg.startsWith("--provider=")) {
+			model = true;
+			continue;
+		}
+		if (arg === "--thinking" || arg.startsWith("--thinking=")) {
+			thinking = true;
+		}
+	}
+	return { model, thinking };
+}
+
+function isSessionRestoringStartup(argv: readonly string[]): boolean {
+	return argv.some((arg) =>
+		["--continue", "-c", "--resume", "-r", "--session", "--fork"].includes(arg) ||
+		/^(--resume|--session|--fork)=/.test(arg),
+	);
+}
+
+export function registerDefaults(
 	pi: ExtensionAPI,
 	store: ConfigStore = defaultStore,
 	argv: readonly string[] = process.argv,
 ): void {
 	let applying = false;
 
-	async function apply(config: FixedDefaults, ctx: ExtensionContext): Promise<boolean> {
+	async function apply(
+		config: DefaultsConfig,
+		ctx: ExtensionContext,
+		opts: { model?: boolean; thinking?: boolean } = {},
+	): Promise<boolean> {
+		const applyModel = opts.model !== false;
+		const applyThinking = opts.thinking !== false;
+		if (!applyModel && !applyThinking) return true;
+
 		const current = ctx.model;
 		const alreadyFixed =
 			current?.provider === config.provider && current?.id === config.model;
 
-		if (!alreadyFixed) {
+		if (applyModel && !alreadyFixed) {
 			const model = ctx.modelRegistry.find(config.provider, config.model);
 			if (!model) {
-				ctx.ui.notify(`Fixed defaults: unavailable model ${config.provider}/${config.model}`, "warning");
+				ctx.ui.notify(`Defaults: unavailable model ${config.provider}/${config.model}`, "warning");
 				return false;
 			}
 			applying = true;
 			try {
 				if (!(await pi.setModel(model))) {
-					ctx.ui.notify(`Fixed defaults: unavailable model ${config.provider}/${config.model}`, "warning");
+					ctx.ui.notify(`Defaults: unavailable model ${config.provider}/${config.model}`, "warning");
 					return false;
 				}
 			} finally {
@@ -171,13 +236,16 @@ export function registerFixedDefaults(
 			}
 		}
 
-		pi.setThinkingLevel(config.thinking);
+		if (applyThinking) pi.setThinkingLevel(config.thinking);
 		return true;
 	}
 
-	async function applyIfNeeded(ctx: ExtensionContext): Promise<void> {
+	async function applyIfNeeded(
+		ctx: ExtensionContext,
+		opts?: { model?: boolean; thinking?: boolean },
+	): Promise<void> {
 		const config = await store.read();
-		await apply(config, ctx);
+		await apply(config, ctx, opts);
 	}
 
 	pi.registerCommand("defaults", {
@@ -204,7 +272,7 @@ export function registerFixedDefaults(
 				await store.write(next);
 				ctx.ui.notify(`Fresh sessions: ${modelId} (${next.thinking})`, "info");
 			} catch (error) {
-				ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				ctx.ui.notify(`Defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			}
 		},
 	});
@@ -212,13 +280,15 @@ export function registerFixedDefaults(
 	pi.on("session_start", async (event: { reason: string }, ctx: ExtensionContext) => {
 		if (event.reason !== "startup" && event.reason !== "new") return;
 		try {
-			if (event.reason === "startup" && argv.some((arg) =>
-				["--continue", "-c", "--resume", "-r", "--session", "--fork"].includes(arg) ||
-				/^(--resume|--session|--fork)=/.test(arg),
-			)) return;
+			if (event.reason === "startup") {
+				if (isSessionRestoringStartup(argv)) return;
+				const cli = getCliSessionOverrides(argv);
+				await applyIfNeeded(ctx, { model: !cli.model, thinking: !cli.thinking });
+				return;
+			}
 			await applyIfNeeded(ctx);
 		} catch (error) {
-			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			ctx.ui.notify(`Defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	});
 
@@ -232,9 +302,11 @@ export function registerFixedDefaults(
 			if (isModelInScope(selected, ctx.scopedModels)) return;
 			await applyIfNeeded(ctx);
 		} catch (error) {
-			ctx.ui.notify(`Fixed defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			ctx.ui.notify(`Defaults: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	});
 }
 
-export default registerFixedDefaults;
+/** @deprecated Use registerDefaults */
+export const registerFixedDefaults = registerDefaults;
+export default registerDefaults;

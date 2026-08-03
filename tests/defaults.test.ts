@@ -2,7 +2,12 @@
 import assert from "node:assert/strict";
 // @ts-ignore -- standalone extension checkout has no local Node type roots.
 import test from "node:test";
-import { filterScopedModels, isModelInScope, registerFixedDefaults } from "../extensions/fixed-defaults.ts";
+import {
+	filterScopedModels,
+	getCliSessionOverrides,
+	isModelInScope,
+	registerDefaults,
+} from "../extensions/defaults.ts";
 
 const config = { provider: "CLI", model: "grok-4.5", thinking: "high" } as const;
 const store = { read: async () => config, write: async () => {} };
@@ -69,7 +74,7 @@ test("isModelInScope treats empty scoped list as unrestricted", () => {
 
 test("applies fixed defaults on startup and new", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
 	const ctx = baseCtx({ model: undefined });
@@ -86,7 +91,7 @@ test("applies fixed defaults on startup and new", async () => {
 
 test("startup still applies defaults after Pi writes initial model metadata", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
 	await onSessionStart(
@@ -113,7 +118,7 @@ test("session-restoring CLI startup preserves model and thinking", async () => {
 		["pi", "--fork", "/tmp/existing-session.jsonl"],
 	]) {
 		const { selected, handlers, pi } = createHarness();
-		registerFixedDefaults(pi, store, argv);
+		registerDefaults(pi, store, argv);
 		const onSessionStart = required(handlers.get("session_start"));
 
 		await onSessionStart(
@@ -125,9 +130,87 @@ test("session-restoring CLI startup preserves model and thinking", async () => {
 	}
 });
 
+test("getCliSessionOverrides detects model provider and thinking flags", () => {
+	assert.deepEqual(getCliSessionOverrides(["pi"]), { model: false, thinking: false });
+	assert.deepEqual(
+		getCliSessionOverrides(["pi", "--model", "cliproxyapi/claude-opus-5", "--thinking", "xhigh"]),
+		{ model: true, thinking: true },
+	);
+	assert.deepEqual(
+		getCliSessionOverrides(["pi", "--model=cliproxyapi/claude-opus-5:xhigh"]),
+		{ model: true, thinking: true },
+	);
+	assert.deepEqual(
+		getCliSessionOverrides(["pi", "--provider", "cliproxyapi", "--model", "claude-opus-5"]),
+		{ model: true, thinking: false },
+	);
+	assert.deepEqual(getCliSessionOverrides(["pi", "--thinking=high"]), {
+		model: false,
+		thinking: true,
+	});
+});
+
+test("CLI model and thinking flags preserve startup selection", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerDefaults(pi, store, [
+		"pi",
+		"--model",
+		"cliproxyapi/claude-opus-5",
+		"--thinking",
+		"xhigh",
+	]);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "startup" },
+		baseCtx({ model: { provider: "cliproxyapi", id: "claude-opus-5" } }),
+	);
+
+	assert.deepEqual(selected, []);
+});
+
+test("CLI model-only override keeps model and applies fixed thinking", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerDefaults(pi, store, ["pi", "--model", "cliproxyapi/claude-opus-5"]);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "startup" },
+		baseCtx({ model: { provider: "cliproxyapi", id: "claude-opus-5" } }),
+	);
+
+	assert.deepEqual(selected, ["thinking:high"]);
+});
+
+test("CLI thinking-only override keeps thinking and applies fixed model", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerDefaults(pi, store, ["pi", "--thinking", "xhigh"]);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "startup" },
+		baseCtx({ model: { provider: "CLI", id: "gpt-5.6-sol" } }),
+	);
+
+	assert.deepEqual(selected, ["model:CLI/grok-4.5"]);
+});
+
+test("/new still applies fixed defaults after CLI startup", async () => {
+	const { selected, handlers, pi } = createHarness();
+	registerDefaults(pi, store, ["pi", "--model", "cliproxyapi/claude-opus-5", "--thinking", "xhigh"]);
+	const onSessionStart = required(handlers.get("session_start"));
+
+	await onSessionStart(
+		{ reason: "new" },
+		baseCtx({ model: { provider: "cliproxyapi", id: "claude-opus-5" } }),
+	);
+
+	assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
+});
+
 test("resume fork reload preserve an allowed saved model", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
 	const ctx = baseCtx({
@@ -142,7 +225,7 @@ test("resume fork reload preserve an allowed saved model", async () => {
 
 test("resume fork reload preserve existing restored models", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
 	for (const reason of ["resume", "fork", "reload"]) {
@@ -157,7 +240,7 @@ test("resume fork reload preserve existing restored models", async () => {
 
 test("empty scopedModels leaves resume model unrestricted", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
 	await onSessionStart(
@@ -190,7 +273,7 @@ test("model_select reverts out-of-scope once and preserves allowed selections", 
 		return true;
 	};
 
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onModelSelect = required(handlers.get("model_select"));
 
 	await onModelSelect(
@@ -209,7 +292,7 @@ test("model_select reverts out-of-scope once and preserves allowed selections", 
 
 test("model_select ignores restored model selections", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onModelSelect = required(handlers.get("model_select"));
 
 	await onModelSelect(
@@ -225,7 +308,7 @@ test("model_select ignores restored model selections", async () => {
 
 test("already on fixed model skips setModel but still corrects thinking", async () => {
 	const { selected, handlers, pi } = createHarness();
-	registerFixedDefaults(pi, store);
+	registerDefaults(pi, store);
 	const onSessionStart = required(handlers.get("session_start"));
 
 	await onSessionStart(
@@ -259,7 +342,7 @@ test("/defaults shows a searchable paginated scoped list and only saves future d
 		},
 	} as any;
 
-	registerFixedDefaults(pi, {
+	registerDefaults(pi, {
 		read: async () => config,
 		write: async (next) => {
 			saved = next;
