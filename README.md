@@ -8,6 +8,7 @@ A minimal [Pi](https://github.com/badlogic/pi-mono) extension that pins default 
 - Search models directly in a paginated list.
 - Saves the selected model and thinking level for future fresh sessions and `/new`.
 - Fresh startup and `/new` apply the defaults; explicit CLI `--model` / `--provider` / `--thinking` (including `--model id:thinking`) win on startup; session-restoring CLI startup (`--continue`, `--resume`, `--session`, `--fork`, including `/rmt`) preserves restored settings.
+- Native `pi-subagents` background startup preserves its SDK-selected model and thinking; the existing model-scope guard remains active. This recognizes the `pi-subagents/src/runs/background/subagent-runner.ts` source and `.js` packaged entrypoints, so recheck compatibility if that runner path changes.
 - Resumed, forked, and reloaded sessions retain their restored model and thinking level.
 - User-initiated out-of-scope `model_select` events are reverted once to the defaults.
 - Empty `scopedModels` means unrestricted (no scope filter active).

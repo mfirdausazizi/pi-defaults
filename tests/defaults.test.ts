@@ -107,6 +107,43 @@ test("startup still applies defaults after Pi writes initial model metadata", as
 	assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
 });
 
+
+test("native pi-subagents startup preserves SDK model and thinking", async () => {
+	for (const runner of [
+		"/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.ts",
+		"/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.js",
+		"C:\\tools\\node_modules\\pi-subagents\\src\\runs\\background\\subagent-runner.js",
+		"C:\\tools\\node_modules\\pi-subagents\\src\\runs\\background\\subagent-runner.ts",
+	]) {
+		const { selected, handlers, pi } = createHarness();
+		registerDefaults(pi, store, ["node", runner, "/tmp/run.json"]);
+		await required(handlers.get("session_start"))(
+			{ reason: "startup" },
+			baseCtx({ model: { provider: "cliproxyapi", id: "claude-fable-5-1" }, thinkingLevel: "low" }),
+		);
+		assert.deepEqual(selected, [], runner);
+
+		// Startup preservation does not disable the existing model-scope guard.
+		await required(handlers.get("model_select"))(
+			{ model: { provider: "other", id: "blocked" }, source: "set" },
+			baseCtx(),
+		);
+		assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
+	}
+});
+
+test("ordinary startup is not mistaken for a native subagent", async () => {
+	for (const argv of [
+		["node", "/tmp/subagent-runner.ts"],
+		["node", "/pi/dist/cli.js", "/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.ts"],
+	]) {
+		const { selected, handlers, pi } = createHarness();
+		registerDefaults(pi, store, argv);
+		await required(handlers.get("session_start"))({ reason: "startup" }, baseCtx());
+		assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
+	}
+});
+
 test("session-restoring CLI startup preserves model and thinking", async () => {
 	for (const argv of [
 		["pi", "--session", "/tmp/existing-session.jsonl"],

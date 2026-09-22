@@ -281,6 +281,9 @@ export function registerDefaults(
 		if (event.reason !== "startup" && event.reason !== "new") return;
 		try {
 			if (event.reason === "startup") {
+				// Native subagents select model/effort through the SDK, not CLI flags.
+				// ponytail: runner-path coupling until Pi exposes explicit SDK override metadata.
+				if (/\/pi-subagents\/src\/runs\/background\/subagent-runner\.(?:ts|js)$/.test(argv[1]?.replaceAll("\\", "/") ?? "")) return;
 				if (isSessionRestoringStartup(argv)) return;
 				const cli = getCliSessionOverrides(argv);
 				await applyIfNeeded(ctx, { model: !cli.model, thinking: !cli.thinking });
