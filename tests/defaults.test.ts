@@ -112,11 +112,16 @@ test("native pi-subagents startup preserves SDK model and thinking", async () =>
 	for (const runner of [
 		"/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.ts",
 		"/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.js",
+		"/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner-bootstrap.js",
+		"/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner-bootstrap.ts",
 		"C:\\tools\\node_modules\\pi-subagents\\src\\runs\\background\\subagent-runner.js",
 		"C:\\tools\\node_modules\\pi-subagents\\src\\runs\\background\\subagent-runner.ts",
+		"/future-layout/renamed-runner.mjs",
+		"/tools/jiti/bin/jiti.js",
+		"/usr/local/bin/pi",
 	]) {
 		const { selected, handlers, pi } = createHarness();
-		registerDefaults(pi, store, ["node", runner, "/tmp/run.json"]);
+		registerDefaults(pi, store, ["node", runner, "/tmp/run.json"], { PI_SUBAGENT_CHILD: "1" });
 		await required(handlers.get("session_start"))(
 			{ reason: "startup" },
 			baseCtx({ model: { provider: "cliproxyapi", id: "claude-fable-5-1" }, thinkingLevel: "low" }),
@@ -133,12 +138,9 @@ test("native pi-subagents startup preserves SDK model and thinking", async () =>
 });
 
 test("ordinary startup is not mistaken for a native subagent", async () => {
-	for (const argv of [
-		["node", "/tmp/subagent-runner.ts"],
-		["node", "/pi/dist/cli.js", "/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.ts"],
-	]) {
+	for (const marker of [undefined, "", "0", "true"]) {
 		const { selected, handlers, pi } = createHarness();
-		registerDefaults(pi, store, argv);
+		registerDefaults(pi, store, ["node", "/tmp/node_modules/pi-subagents/src/runs/background/subagent-runner.js"], { PI_SUBAGENT_CHILD: marker });
 		await required(handlers.get("session_start"))({ reason: "startup" }, baseCtx());
 		assert.deepEqual(selected, ["model:CLI/grok-4.5", "thinking:high"]);
 	}

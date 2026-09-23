@@ -203,6 +203,7 @@ export function registerDefaults(
 	pi: ExtensionAPI,
 	store: ConfigStore = defaultStore,
 	argv: readonly string[] = process.argv,
+	env: Readonly<Record<string, string | undefined>> = process.env,
 ): void {
 	let applying = false;
 
@@ -282,8 +283,8 @@ export function registerDefaults(
 		try {
 			if (event.reason === "startup") {
 				// Native subagents select model/effort through the SDK, not CLI flags.
-				// ponytail: runner-path coupling until Pi exposes explicit SDK override metadata.
-				if (/\/pi-subagents\/src\/runs\/background\/subagent-runner\.(?:ts|js)$/.test(argv[1]?.replaceAll("\\", "/") ?? "")) return;
+				// The child marker survives runner renames, wrappers, and binary hosts.
+				if (env.PI_SUBAGENT_CHILD === "1") return;
 				if (isSessionRestoringStartup(argv)) return;
 				const cli = getCliSessionOverrides(argv);
 				await applyIfNeeded(ctx, { model: !cli.model, thinking: !cli.thinking });
